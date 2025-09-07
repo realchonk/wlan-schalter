@@ -3,10 +3,18 @@
 extern crate panic_halt;
 
 use cyw43::JoinOptions;
-use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
+use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use embassy_executor::Spawner;
-use embassy_net::{tcp::TcpSocket, StackResources};
-use embassy_rp::{bind_interrupts, clocks::RoscRng, gpio::{Input, Level, Output, Pull}, peripherals::{DMA_CH0, PIO0, USB}, pio::{self, Pio}, usb, watchdog::Watchdog};
+use embassy_net::{StackResources, tcp::TcpSocket};
+use embassy_rp::{
+    bind_interrupts,
+    clocks::RoscRng,
+    gpio::{Input, Level, Output, Pull},
+    peripherals::{DMA_CH0, PIO0, USB},
+    pio::{self, Pio},
+    usb,
+    watchdog::Watchdog,
+};
 use embassy_time::{Duration, Timer, WithTimeout};
 use embassy_usb_logger::{LoggerState, UsbLogger};
 use static_cell::StaticCell;
@@ -24,29 +32,24 @@ bind_interrupts! {
 
 #[embassy_executor::task]
 async fn cyw43_task(
-    runner: cyw43::Runner<
-        'static,
-        Output<'static>,
-        PioSpi<'static, PIO0, 0, DMA_CH0>
-    >,
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
 ) -> ! {
     runner.run().await
 }
 
 #[embassy_executor::task]
-async fn net_task(
-    mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>,
-) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
     runner.run().await
 }
 
 #[embassy_executor::task]
 async fn logger_task(driver: usb::Driver<'static, USB>) {
-    static LOGGER: UsbLogger<1024, embassy_usb_logger::DummyHandler> = UsbLogger::with_custom_style(|record, writer| {
-        use core::fmt::Write;
-        let level = record.level().as_str();
-        write!(writer, "[{level}] {}\r\n", record.args()).unwrap();
-    });
+    static LOGGER: UsbLogger<1024, embassy_usb_logger::DummyHandler> =
+        UsbLogger::with_custom_style(|record, writer| {
+            use core::fmt::Write;
+            let level = record.level().as_str();
+            write!(writer, "[{level}] {}\r\n", record.args()).unwrap();
+        });
     unsafe {
         log::set_logger_racy(&LOGGER).unwrap();
         log::set_max_level_racy(log::LevelFilter::Trace);
@@ -78,23 +81,23 @@ impl Switch<'_> {
                 for r in &mut self.relays {
                     r.set_low();
                 }
-            },
+            }
 
             b'1' => {
                 for r in &mut self.relays {
                     r.set_high();
                 }
-            },
+            }
             b'f' => {
                 socket.abort();
                 let _ = socket.flush().with_timeout(Duration::from_secs(1)).await;
                 embassy_rp::rom_data::reset_to_usb_boot(0, 0);
-            },
+            }
             b'r' => {
                 socket.abort();
                 let _ = socket.flush().with_timeout(Duration::from_secs(1)).await;
                 self.watchdog.trigger_reset();
-            },
+            }
             b'?' => {
                 let mut buf = [0u8; 6];
                 for (i, r) in self.relays.iter().enumerate() {
@@ -108,7 +111,7 @@ impl Switch<'_> {
                 buf[5] = b'\n';
                 let _ = socket.write(&buf).await;
                 return;
-            },
+            }
             b'\r' | b'\n' => return,
             _ => {
                 let _ = socket.write(b"?\r\n").await;
@@ -177,11 +180,13 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(cyw43_task(runner)).unwrap();
 
     control.init(clm).await;
-    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
 
     let config = embassy_net::Config::dhcpv4(Default::default());
     let seed = rng.next_u64();
-    
+
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     let resources = RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(net_device, config, resources, seed);
@@ -224,16 +229,16 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(0) => {
                     log::info!("end of file reached.");
                     break;
-                },
+                }
                 Ok(_) => {
                     let b = buf[0];
                     log::info!("received byte: {b:?}");
                     switch.run(&mut socket, b).await;
-                },
+                }
                 Err(e) => {
                     log::error!("failed to recv: {e:?}");
                     break;
-                },
+                }
             }
         }
 
