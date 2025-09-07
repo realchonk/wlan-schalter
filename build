@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
-RUSTC_BOOTSTRAP=1 cargo r --release
+RUSTC_BOOTSTRAP=1 cargo b --release
 size target/thumbv6m-none-eabi/release/rp2040-test2
+RUSTC_BOOTSTRAP=1 cargo r --release
 sleep 1
 doas cu -l cuaU0 -s 115200

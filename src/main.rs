@@ -6,7 +6,7 @@ use core::panic::PanicInfo;
 use cyw43::JoinOptions;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use embassy_executor::Spawner;
-use embassy_net::{StackResources, tcp::TcpSocket};
+use embassy_net::{DhcpConfig, StackResources, tcp::TcpSocket};
 use embassy_rp::{
     bind_interrupts,
     clocks::RoscRng,
@@ -75,29 +75,31 @@ struct Switch<'a> {
 }
 
 impl Switch<'_> {
+    fn set(&mut self, n: usize, on: bool) {
+        let level = match on {
+            true => Level::Low,
+            false => Level::High,
+        };
+        self.relays[n].set_level(level);
+    }
+    fn set_all(&mut self, on: bool) {
+        (0..4).for_each(|i| self.set(i, on))
+    }
     async fn run(&mut self, socket: &mut TcpSocket<'_>, b: u8) {
         match b {
-            b'a' => self.relays[0].set_low(),
-            b'b' => self.relays[1].set_low(),
-            b'c' => self.relays[2].set_low(),
-            b'd' => self.relays[3].set_low(),
+            b'a' => self.set(0, false),
+            b'b' => self.set(1, false),
+            b'c' => self.set(2, false),
+            b'd' => self.set(3, false),
 
-            b'A' => self.relays[0].set_high(),
-            b'B' => self.relays[1].set_high(),
-            b'C' => self.relays[2].set_high(),
-            b'D' => self.relays[3].set_high(),
+            b'A' => self.set(0, true),
+            b'B' => self.set(1, true),
+            b'C' => self.set(2, true),
+            b'D' => self.set(3, true),
 
-            b'0' => {
-                for r in &mut self.relays {
-                    r.set_low();
-                }
-            }
+            b'0' => self.set_all(false),
+            b'1' => self.set_all(true),
 
-            b'1' => {
-                for r in &mut self.relays {
-                    r.set_high();
-                }
-            }
             b'f' => {
                 socket.abort();
                 let _ = socket.flush().with_timeout(Duration::from_secs(1)).await;
@@ -112,8 +114,8 @@ impl Switch<'_> {
                 let mut buf = [0u8; 6];
                 for (i, r) in self.relays.iter().enumerate() {
                     match r.get_output_level() {
-                        Level::Low => buf[i] = b'a' + i as u8,
-                        Level::High => buf[i] = b'A' + i as u8,
+                        Level::Low => buf[i] = b'A' + i as u8,
+                        Level::High => buf[i] = b'a' + i as u8,
                     }
                 }
 
@@ -132,7 +134,7 @@ impl Switch<'_> {
 
         let mut level = Level::Low;
         for r in &self.relays {
-            if r.get_output_level() == Level::High {
+            if r.get_output_level() == Level::Low {
                 level = Level::High;
             }
         }
@@ -198,6 +200,8 @@ async fn main(spawner: Spawner) -> ! {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
+    let mut dhcp_config = DhcpConfig::default();
+    dhcp_config.hostname = Some("wlan-schalter".parse().unwrap());
     let config = embassy_net::Config::dhcpv4(Default::default());
     let seed = rng.next_u64();
 
