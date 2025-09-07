@@ -1,0 +1,17 @@
+[build]
+target = "thumbv6m-none-eabi"
+
+[unstable]
+build-std = ["core", "compiler_builtins"]
+
+[target.thumbv6m-none-eabi]
+runner = "picotool load --update --verify --execute -t elf"
+rustflags = [
+	"-C", "linker=ld.lld-19",
+	"-C", "link-arg=-static",
+	"-C", "link-args=-z notext",
+	"-C", "link-arg=--nmagic",
+	"-C", "link-arg=-Tlink.x",
+	#"-C", "link-arg=-Tdefmt.x",
+	"-C", "no-vectorize-loops",
+]
