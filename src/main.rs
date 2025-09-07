@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
-extern crate panic_halt;
+
+use core::panic::PanicInfo;
 
 use cyw43::JoinOptions;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
@@ -10,8 +11,9 @@ use embassy_rp::{
     bind_interrupts,
     clocks::RoscRng,
     gpio::{Input, Level, Output, Pull},
-    peripherals::{DMA_CH0, PIO0, USB},
+    peripherals::{DMA_CH0, PIO0, USB, WATCHDOG},
     pio::{self, Pio},
+    rom_data::reset_to_usb_boot,
     usb,
     watchdog::Watchdog,
 };
@@ -28,6 +30,14 @@ bind_interrupts! {
         PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
         USBCTRL_IRQ => usb::InterruptHandler<USB>;
     }
+}
+
+#[panic_handler]
+fn _panic(_info: &PanicInfo) -> ! {
+    let wd = unsafe { WATCHDOG::steal() };
+    let mut wd = Watchdog::new(wd);
+    wd.trigger_reset();
+    loop {}
 }
 
 #[embassy_executor::task]
@@ -91,7 +101,7 @@ impl Switch<'_> {
             b'f' => {
                 socket.abort();
                 let _ = socket.flush().with_timeout(Duration::from_secs(1)).await;
-                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+                reset_to_usb_boot(0, 0);
             }
             b'r' => {
                 socket.abort();
@@ -112,6 +122,7 @@ impl Switch<'_> {
                 let _ = socket.write(&buf).await;
                 return;
             }
+            b'p' => panic!("FORCED RESET"),
             b'\r' | b'\n' => return,
             _ => {
                 let _ = socket.write(b"?\r\n").await;
@@ -136,6 +147,8 @@ async fn main(spawner: Spawner) -> ! {
     let usb_driver = usb::Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(usb_driver)).unwrap();
 
+    log::info!("Hello World");
+
     let mut switch = Switch {
         relays: [
             Output::new(p.PIN_2, Level::Low),
@@ -147,11 +160,6 @@ async fn main(spawner: Spawner) -> ! {
         led: Output::new(p.PIN_6, Level::Low),
         button: Input::new(p.PIN_7, Pull::Down),
     };
-
-    // wait for serial to come up
-    Timer::after_secs(1).await;
-
-    log::info!("Hello World");
 
     let mut rng = RoscRng;
     let fw = cyw43_firmware::CYW43_43439A0;
@@ -172,13 +180,19 @@ async fn main(spawner: Spawner) -> ! {
         p.DMA_CH0,
     );
 
-    log::info!("Starting network stack");
+    log::info!("Starting network stack...");
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
     spawner.spawn(cyw43_task(runner)).unwrap();
 
+    log::info!("Waiting for LED...");
+    control.gpio_set(0, true).await;
+    Timer::after_millis(500).await;
+    control.gpio_set(0, false).await;
+
+    log::info!("Initializing WiFi controller...");
     control.init(clm).await;
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
@@ -191,6 +205,8 @@ async fn main(spawner: Spawner) -> ! {
     let resources = RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(net_device, config, resources, seed);
     spawner.spawn(net_task(runner)).unwrap();
+
+    log::info!("connecting to AP...");
 
     let opts = JoinOptions::new(WIFI_PASSWORD.as_bytes());
     while let Err(e) = control.join(WIFI_NETWORK, opts.clone()).await {
@@ -220,7 +236,10 @@ async fn main(spawner: Spawner) -> ! {
             continue;
         }
 
-        log::info!("Received connection from {:?}", socket.remote_endpoint());
+        log::info!(
+            "Received connection from {:?}",
+            socket.remote_endpoint().unwrap()
+        );
         control.gpio_set(0, false).await;
 
         loop {
